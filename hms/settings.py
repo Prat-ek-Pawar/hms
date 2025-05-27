@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'django_filters',
+    'oauth2_provider',
 
     # local apps
     'apps.users',

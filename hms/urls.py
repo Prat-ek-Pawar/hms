@@ -10,6 +10,7 @@ urlpatterns = [
     path('api/permissions/', include('apps.permissions.urls')),
     path('api/doctors/', include('apps.doctors.urls')),
     path('api/patients/', include('apps.patients.urls')),
+    path('o/', include('oauth2_provider.urls', namespace='oauth2_provider')),
 ]
 
 if settings.DEBUG:
