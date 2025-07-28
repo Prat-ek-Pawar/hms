@@ -1,2 +1,21 @@
 .env
 .env.example
+# Django
+*.pyc
+__pycache__/
+db.sqlite3
+/staticfiles/
+/media/
+.env
+.env.*
+
+# VSCode
+.vscode/
+
+# Python
+venv/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
