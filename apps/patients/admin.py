@@ -29,6 +29,11 @@ class PatientDocumentInline(admin.TabularInline):
     fields = ['document_type', 'title', 'document_date', 'is_sensitive']
     readonly_fields = ['document_date']
 
+class PatientNoteInline(admin.TabularInline):
+    model = PatientNote
+    extra = 0
+    fields = ['note_type', 'title', 'content', 'is_confidential']
+
 @admin.register(Patient)
 class PatientAdmin(admin.ModelAdmin):
     list_display = [
@@ -45,8 +50,14 @@ class PatientAdmin(admin.ModelAdmin):
         'email', 'emergency_contact_name'
     ]
     ordering = ['-registration_date']
-    inlines = [PatientInsuranceInline, PatientAllergyInline, PatientMedicationInline, PatientDocumentInline]
-    
+    inlines = [
+        PatientInsuranceInline,
+        PatientAllergyInline,
+        PatientMedicationInline,
+        PatientDocumentInline,
+        PatientNoteInline
+    ]
+
     fieldsets = (
         ('Patient Information', {
             'fields': ('patient_id', 'user', 'status')
@@ -68,8 +79,7 @@ class PatientAdmin(admin.ModelAdmin):
         ('Medical Information', {
             'fields': (
                 ('blood_group', 'height', 'weight', 'bmi'),
-                'allergies', 'chronic_conditions', 'current_medications',
-                'past_surgeries', 'family_history'
+                'chronic_conditions', 'past_surgeries', 'family_history'
             )
         }),
         ('Social Information', {
@@ -95,41 +105,62 @@ class PatientAdmin(admin.ModelAdmin):
             )
         }),
         ('Additional Information', {
-            'fields': ('notes', 'profile_picture', 'created_by'),
+            'fields': ('profile_picture', 'created_by'),
             'classes': ('collapse',)
         })
     )
-    
+
     readonly_fields = ['patient_id', 'age', 'bmi', 'registration_date', 'created_by']
-    
+
+    def get_queryset(self, request):
+        """Optimize queryset with related objects"""
+        qs = super().get_queryset(request)
+        return qs.select_related('user', 'created_by').prefetch_related(
+            'patientallergy_set',
+            'patientmedication_set',
+            'patientnote_set',
+            'patientinsurance_set'
+        )
+
     def full_name(self, obj):
         return obj.full_name
     full_name.short_description = 'Name'
-    
+
     def insurance_status(self, obj):
-        if obj.is_insurance_valid:
+        """Display insurance status with color coding"""
+        if hasattr(obj, 'is_insurance_valid') and obj.is_insurance_valid:
             return format_html('<span style="color: green;">✓ Valid</span>')
         elif obj.insurance_provider:
             return format_html('<span style="color: red;">✗ Expired</span>')
         else:
             return format_html('<span style="color: gray;">- No Insurance</span>')
     insurance_status.short_description = 'Insurance'
-    
+
+    def total_allergies(self, obj):
+        """Count of active allergies"""
+        return obj.patientallergy_set.filter(is_active=True).count()
+    total_allergies.short_description = 'Active Allergies'
+
+    def total_medications(self, obj):
+        """Count of current medications"""
+        return obj.patientmedication_set.filter(status='active').count()
+    total_medications.short_description = 'Current Medications'
+
     actions = ['activate_patients', 'deactivate_patients', 'mark_as_transferred']
-    
+
     def activate_patients(self, request, queryset):
-        queryset.update(status='active')
-        self.message_user(request, f'Activated {queryset.count()} patients')
+        updated = queryset.update(status='active')
+        self.message_user(request, f'Activated {updated} patients')
     activate_patients.short_description = 'Activate selected patients'
-    
+
     def deactivate_patients(self, request, queryset):
-        queryset.update(status='inactive')
-        self.message_user(request, f'Deactivated {queryset.count()} patients')
+        updated = queryset.update(status='inactive')
+        self.message_user(request, f'Deactivated {updated} patients')
     deactivate_patients.short_description = 'Deactivate selected patients'
-    
+
     def mark_as_transferred(self, request, queryset):
-        queryset.update(status='transferred')
-        self.message_user(request, f'Marked {queryset.count()} patients as transferred')
+        updated = queryset.update(status='transferred')
+        self.message_user(request, f'Marked {updated} patients as transferred')
     mark_as_transferred.short_description = 'Mark as transferred'
 
 @admin.register(PatientInsurance)
@@ -141,9 +172,12 @@ class PatientInsuranceAdmin(admin.ModelAdmin):
     list_filter = ['status', 'policy_type', 'provider_name', 'start_date']
     search_fields = ['patient__first_name', 'patient__last_name', 'policy_number', 'provider_name']
     ordering = ['-start_date']
-    
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('patient')
+
     def is_valid(self, obj):
-        if obj.is_valid:
+        if hasattr(obj, 'is_valid') and obj.is_valid:
             return format_html('<span style="color: green;">✓ Valid</span>')
         else:
             return format_html('<span style="color: red;">✗ Invalid</span>')
@@ -159,6 +193,9 @@ class PatientDocumentAdmin(admin.ModelAdmin):
     search_fields = ['patient__first_name', 'patient__last_name', 'title', 'description']
     ordering = ['-document_date']
 
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('patient', 'uploaded_by')
+
 @admin.register(PatientVitals)
 class PatientVitalsAdmin(admin.ModelAdmin):
     list_display = [
@@ -168,10 +205,14 @@ class PatientVitalsAdmin(admin.ModelAdmin):
     list_filter = ['recorded_date']
     search_fields = ['patient__first_name', 'patient__last_name']
     ordering = ['-recorded_date']
-    
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('patient', 'recorded_by')
+
     def blood_pressure(self, obj):
-        if obj.blood_pressure_systolic and obj.blood_pressure_diastolic:
-            return f"{obj.blood_pressure_systolic}/{obj.blood_pressure_diastolic}"
+        if hasattr(obj, 'blood_pressure_systolic') and hasattr(obj, 'blood_pressure_diastolic'):
+            if obj.blood_pressure_systolic and obj.blood_pressure_diastolic:
+                return f"{obj.blood_pressure_systolic}/{obj.blood_pressure_diastolic}"
         return "-"
     blood_pressure.short_description = 'BP (mmHg)'
 
@@ -185,18 +226,27 @@ class PatientAllergyAdmin(admin.ModelAdmin):
     search_fields = ['patient__first_name', 'patient__last_name', 'allergen', 'symptoms']
     ordering = ['-severity', 'allergen']
 
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('patient')
+
 @admin.register(PatientMedication)
 class PatientMedicationAdmin(admin.ModelAdmin):
     list_display = [
         'patient', 'medication_name', 'dosage', 'frequency',
         'start_date', 'end_date', 'status', 'prescribed_by'
     ]
-    list_filter = ['status', 'start_date', 'route']
+    list_filter = ['status', 'start_date']
     search_fields = [
         'patient__first_name', 'patient__last_name',
         'medication_name', 'prescribed_by'
     ]
     ordering = ['-start_date']
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('patient')
+
+    # Only include 'route' filter if the field exists in the model
+    # list_filter = ['status', 'start_date', 'route']  # Uncomment if route field exists
 
 @admin.register(PatientNote)
 class PatientNoteAdmin(admin.ModelAdmin):
@@ -207,3 +257,6 @@ class PatientNoteAdmin(admin.ModelAdmin):
     list_filter = ['note_type', 'is_confidential', 'created_at']
     search_fields = ['patient__first_name', 'patient__last_name', 'title', 'content']
     ordering = ['-created_at']
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('patient', 'created_by')
