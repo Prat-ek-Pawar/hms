@@ -1,301 +1,190 @@
 # apps/permissions/admin.py
+
 from django.contrib import admin
 from django.contrib.auth.models import Group
-from .models import Module, Permission, UserGroup, GroupPermission, UserPermission, PermissionLog
-
-@admin.register(Module)
-class ModuleAdmin(admin.ModelAdmin):
-    list_display = ['name', 'display_name', 'is_active', 'created_at']
-    list_filter = ['is_active', 'created_at']
-    search_fields = ['name', 'display_name', 'description']
-    ordering = ['name']
+from django.contrib.contenttypes.models import ContentType
+from django.utils.html import format_html
+from django.urls import reverse
+from django.apps import apps
+from .models import Permission, UserPermission, GroupPermission, PermissionManager
 
 @admin.register(Permission)
 class PermissionAdmin(admin.ModelAdmin):
-    list_display = ['name', 'module', 'operation', 'codename', 'is_active', 'created_at']
-    list_filter = ['module', 'operation', 'is_active', 'created_at']
+    list_display = ['name', 'content_type', 'operation', 'codename', 'is_active', 'created_at']
+    list_filter = ['content_type', 'operation', 'is_active', 'created_at']
     search_fields = ['name', 'codename', 'description']
-    ordering = ['module__name', 'operation']
-
-@admin.register(UserGroup)
-class UserGroupAdmin(admin.ModelAdmin):
-    list_display = ['name', 'users_count', 'is_active', 'created_by', 'created_at']
-    list_filter = ['is_active', 'created_at']
-    search_fields = ['group__name', 'description']
-    ordering = ['group__name']
-
-@admin.register(GroupPermission)
-class GroupPermissionAdmin(admin.ModelAdmin):
-    list_display = ['group', 'permission', 'granted_by', 'granted_at']
-    list_filter = ['granted_at']
-    search_fields = ['group__name', 'permission__name', 'permission__codename']
-    ordering = ['-granted_at']
+    readonly_fields = ['codename', 'created_at']
+    
+    fieldsets = (
+        (None, {
+            'fields': ('content_type', 'operation', 'name', 'description', 'is_active')
+        }),
+        ('System Info', {
+            'fields': ('codename', 'created_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('content_type')
+    
+    actions = ['activate_permissions', 'deactivate_permissions']
+    
+    def activate_permissions(self, request, queryset):
+        queryset.update(is_active=True)
+        self.message_user(request, f"{queryset.count()} permissions activated.")
+    activate_permissions.short_description = "Activate selected permissions"
+    
+    def deactivate_permissions(self, request, queryset):
+        queryset.update(is_active=False)
+        self.message_user(request, f"{queryset.count()} permissions deactivated.")
+    deactivate_permissions.short_description = "Deactivate selected permissions"
 
 @admin.register(UserPermission)
 class UserPermissionAdmin(admin.ModelAdmin):
     list_display = ['user', 'permission', 'is_granted', 'granted_by', 'granted_at']
-    list_filter = ['is_granted', 'granted_at']
-    search_fields = ['user__email', 'user__first_name', 'user__last_name', 'permission__name']
-    ordering = ['-granted_at']
-
-@admin.register(PermissionLog)
-class PermissionLogAdmin(admin.ModelAdmin):
-    list_display = ['action', 'user', 'target_user', 'permission', 'group', 'timestamp']
-    list_filter = ['action', 'timestamp']
-    search_fields = ['user__email', 'target_user__email', 'permission__name', 'group__name']
-    ordering = ['-timestamp']
-    readonly_fields = ['timestamp']
-
-# apps/users/management/commands/create_hospital_data.py
-import os
-from django.core.management.base import BaseCommand
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
-from apps.permissions.models import Module, Permission, UserGroup, GroupPermission
-
-User = get_user_model()
-
-class Command(BaseCommand):
-    help = 'Create initial hospital management data including modules, permissions, and groups'
+    list_filter = ['is_granted', 'permission__content_type', 'permission__operation', 'granted_at']
+    search_fields = ['user__first_name', 'user__last_name', 'user__email', 'permission__name']
+    raw_id_fields = ['user', 'granted_by']
+    readonly_fields = ['granted_at']
     
-    def handle(self, *args, **options):
-        self.stdout.write(self.style.SUCCESS('Creating hospital management initial data...'))
+    fieldsets = (
+        (None, {
+            'fields': ('user', 'permission', 'is_granted')
+        }),
+        ('Audit Info', {
+            'fields': ('granted_by', 'granted_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('user', 'permission', 'granted_by')
+    
+    def save_model(self, request, obj, form, change):
+        if not change:  # Only set granted_by for new objects
+            obj.granted_by = request.user
+        super().save_model(request, obj, form, change)
+
+@admin.register(GroupPermission)
+class GroupPermissionAdmin(admin.ModelAdmin):
+    list_display = ['group', 'permission', 'granted_by', 'granted_at']
+    list_filter = ['permission__content_type', 'permission__operation', 'granted_at']
+    search_fields = ['group__name', 'permission__name']
+    raw_id_fields = ['granted_by']
+    readonly_fields = ['granted_at']
+    
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('group', 'permission', 'granted_by')
+    
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.granted_by = request.user
+        super().save_model(request, obj, form, change)
+
+# Custom admin for better Group management
+class GroupPermissionInline(admin.TabularInline):
+    model = GroupPermission
+    extra = 0
+    raw_id_fields = ['permission']
+    readonly_fields = ['granted_by', 'granted_at']
+
+class CustomGroupAdmin(admin.ModelAdmin):
+    list_display = ['name', 'permissions_count', 'users_count']
+    search_fields = ['name']
+    inlines = [GroupPermissionInline]
+    
+    def permissions_count(self, obj):
+        return obj.group_permissions.count()
+    permissions_count.short_description = "Permissions"
+    
+    def users_count(self, obj):
+        return obj.user_set.count()
+    users_count.short_description = "Users"
+    
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related('group_permissions', 'user_set')
+
+# Unregister the default Group admin and register our custom one
+admin.site.unregister(Group)
+admin.site.register(Group, CustomGroupAdmin)
+
+# Custom admin action to create permissions
+class PermissionManagerAdmin(admin.ModelAdmin):
+    """
+    Admin interface for managing permissions in bulk
+    """
+    change_list_template = "admin/permissions/permission_manager.html"
+    
+    def has_add_permission(self, request):
+        return False
+    
+    def has_change_permission(self, request, obj=None):
+        return True
+    
+    def has_delete_permission(self, request, obj=None):
+        return False
+    
+    def changelist_view(self, request, extra_context=None):
+        extra_context = extra_context or {}
         
-        # Create modules
-        modules_data = [
-            {'name': 'patients', 'display_name': 'Patient Management', 'description': 'Manage patient records and information'},
-            {'name': 'appointments', 'display_name': 'Appointments', 'description': 'Schedule and manage appointments'},
-            {'name': 'medical_records', 'display_name': 'Medical Records', 'description': 'Patient medical history and records'},
-            {'name': 'pharmacy', 'display_name': 'Pharmacy', 'description': 'Medicine inventory and prescriptions'},
-            {'name': 'laboratory', 'display_name': 'Laboratory', 'description': 'Lab tests and results'},
-            {'name': 'billing', 'display_name': 'Billing', 'description': 'Patient billing and payments'},
-            {'name': 'inventory', 'display_name': 'Inventory', 'description': 'Medical equipment and supplies'},
-            {'name': 'reports', 'display_name': 'Reports', 'description': 'System reports and analytics'},
-            {'name': 'users', 'display_name': 'User Management', 'description': 'Manage system users'},
-            {'name': 'permissions', 'display_name': 'Permission Management', 'description': 'Manage user permissions and roles'},
+        # Get all apps and their models
+        app_models = {}
+        system_apps = [
+            'django.contrib.admin',
+            'django.contrib.auth', 
+            'django.contrib.contenttypes',
+            'django.contrib.sessions',
+            'django.contrib.messages',
+            'django.contrib.staticfiles',
         ]
         
-        for module_data in modules_data:
-            module, created = Module.objects.get_or_create(
-                name=module_data['name'],
-                defaults=module_data
-            )
-            if created:
-                self.stdout.write(f'Created module: {module.display_name}')
-            
-            # Create permissions for each module
-            operations = ['create', 'read', 'update', 'delete']
-            if module_data['name'] in ['reports', 'medical_records']:
-                operations.append('export')
-            if module_data['name'] in ['billing', 'pharmacy']:
-                operations.extend(['approve', 'reject'])
-            
-            for operation in operations:
-                permission, created = Permission.objects.get_or_create(
-                    module=module,
-                    operation=operation
-                )
-                if created:
-                    self.stdout.write(f'Created permission: {permission.name}')
+        for app_config in apps.get_app_configs():
+            if app_config.name not in system_apps:
+                models = []
+                for model in app_config.get_models():
+                    content_type = ContentType.objects.get_for_model(model)
+                    existing_permissions = Permission.objects.filter(
+                        content_type=content_type
+                    ).count()
+                    
+                    models.append({
+                        'name': model._meta.verbose_name,
+                        'model_name': model._meta.model_name,
+                        'existing_permissions': existing_permissions,
+                        'content_type_id': content_type.id,
+                    })
+                
+                if models:
+                    app_models[app_config.verbose_name] = {
+                        'label': app_config.label,
+                        'models': models
+                    }
         
-        # Create user groups with permissions
-        groups_data = [
-            {
-                'name': 'Administrators',
-                'description': 'Full system access',
-                'permissions': ['*']  # All permissions
-            },
-            {
-                'name': 'Doctors',
-                'description': 'Medical staff with patient care access',
-                'permissions': [
-                    'patients.read', 'patients.update', 'patients.create',
-                    'medical_records.read', 'medical_records.create', 'medical_records.update',
-                    'appointments.read', 'appointments.create', 'appointments.update',
-                    'laboratory.read', 'laboratory.create',
-                    'pharmacy.read', 'pharmacy.create',
-                    'reports.read', 'reports.export'
-                ]
-            },
-            {
-                'name': 'Nurses',
-                'description': 'Nursing staff with patient care support',
-                'permissions': [
-                    'patients.read', 'patients.update',
-                    'medical_records.read', 'medical_records.create',
-                    'appointments.read', 'appointments.update',
-                    'laboratory.read',
-                    'pharmacy.read'
-                ]
-            },
-            {
-                'name': 'Receptionists',
-                'description': 'Front desk staff for appointments and basic patient info',
-                'permissions': [
-                    'patients.read', 'patients.create', 'patients.update',
-                    'appointments.read', 'appointments.create', 'appointments.update', 'appointments.delete',
-                    'billing.read', 'billing.create'
-                ]
-            },
-            {
-                'name': 'Pharmacists',
-                'description': 'Pharmacy staff for medicine management',
-                'permissions': [
-                    'patients.read',
-                    'pharmacy.read', 'pharmacy.create', 'pharmacy.update', 'pharmacy.approve',
-                    'inventory.read', 'inventory.update',
-                    'reports.read'
-                ]
-            },
-            {
-                'name': 'Lab Technicians',
-                'description': 'Laboratory staff for test management',
-                'permissions': [
-                    'patients.read',
-                    'laboratory.read', 'laboratory.create', 'laboratory.update',
-                    'reports.read'
-                ]
-            },
-            {
-                'name': 'Billing Staff',
-                'description': 'Financial staff for billing operations',
-                'permissions': [
-                    'patients.read',
-                    'billing.read', 'billing.create', 'billing.update',
-                    'reports.read', 'reports.export'
-                ]
-            }
-        ]
+        extra_context['app_models'] = app_models
+        extra_context['operations'] = Permission.OPERATION_CHOICES
         
-        for group_data in groups_data:
-            # Create Django Group
-            django_group, created = Group.objects.get_or_create(name=group_data['name'])
-            if created:
-                self.stdout.write(f'Created Django group: {django_group.name}')
+        # Handle permission creation
+        if request.method == 'POST':
+            app_label = request.POST.get('app_label')
+            model_name = request.POST.get('model_name')
+            operations = request.POST.getlist('operations')
             
-            # Create UserGroup
-            user_group, created = UserGroup.objects.get_or_create(
-                group=django_group,
-                defaults={'description': group_data['description']}
-            )
-            if created:
-                self.stdout.write(f'Created user group: {user_group.name}')
-            
-            # Assign permissions
-            if '*' in group_data['permissions']:
-                # Give all permissions to administrators
-                all_permissions = Permission.objects.filter(is_active=True)
-                for permission in all_permissions:
-                    GroupPermission.objects.get_or_create(
-                        group=django_group,
-                        permission=permission
-                    )
-                self.stdout.write(f'Assigned all permissions to {user_group.name}')
-            else:
-                for permission_codename in group_data['permissions']:
+            if app_label and operations:
+                if model_name:
+                    # Create permissions for specific model
                     try:
-                        permission = Permission.objects.get(codename=permission_codename)
-                        GroupPermission.objects.get_or_create(
-                            group=django_group,
-                            permission=permission
-                        )
-                    except Permission.DoesNotExist:
-                        self.stdout.write(
-                            self.style.WARNING(f'Permission {permission_codename} not found')
-                        )
-                self.stdout.write(f'Assigned {len(group_data["permissions"])} permissions to {user_group.name}')
+                        model_class = apps.get_model(app_label, model_name)
+                        created = Permission.create_permissions_for_model(model_class, operations)
+                        self.message_user(request, f"Created {len(created)} permissions for {model_class._meta.verbose_name}")
+                    except LookupError:
+                        self.message_user(request, f"Model {model_name} not found in {app_label}", level='ERROR')
+                else:
+                    # Create permissions for entire app
+                    created = PermissionManager.create_permissions_for_app(app_label, operations)
+                    self.message_user(request, f"Created {len(created)} permissions for {app_label}")
         
-        # Create superuser if it doesn't exist
-        if not User.objects.filter(is_superuser=True).exists():
-            User.objects.create_superuser(
-                username='admin',
-                email='admin@hospital.com',
-                password='admin123',
-                first_name='Super',
-                last_name='Admin',
-                role='admin'
-            )
-            self.stdout.write(self.style.SUCCESS('Created superuser: admin@hospital.com / admin123'))
-        
-        # Create sample users
-        sample_users = [
-            {
-                'username': 'dr.smith', 'email': 'dr.smith@hospital.com', 'password': 'doctor123',
-                'first_name': 'John', 'last_name': 'Smith', 'role': 'doctor',
-                'department': 'Cardiology', 'employee_id': 'DOC001', 'group': 'Doctors'
-            },
-            {
-                'username': 'nurse.jane', 'email': 'nurse.jane@hospital.com', 'password': 'nurse123',
-                'first_name': 'Jane', 'last_name': 'Doe', 'role': 'nurse',
-                'department': 'Emergency', 'employee_id': 'NUR001', 'group': 'Nurses'
-            },
-            {
-                'username': 'receptionist.mary', 'email': 'mary@hospital.com', 'password': 'reception123',
-                'first_name': 'Mary', 'last_name': 'Johnson', 'role': 'receptionist',
-                'department': 'Front Desk', 'employee_id': 'REC001', 'group': 'Receptionists'
-            }
-        ]
-        
-        for user_data in sample_users:
-            group_name = user_data.pop('group')
-            if not User.objects.filter(email=user_data['email']).exists():
-                user = User.objects.create_user(**user_data)
-                group = Group.objects.get(name=group_name)
-                user.groups.add(group)
-                self.stdout.write(f'Created user: {user.email} / {user_data["password"]}')
-        
-        self.stdout.write(self.style.SUCCESS('Hospital management initial data created successfully!'))
-        self.stdout.write(self.style.SUCCESS('You can now login with the following credentials:'))
-        self.stdout.write('Superuser: admin@hospital.com / admin123')
-        self.stdout.write('Doctor: dr.smith@hospital.com / doctor123')
-        self.stdout.write('Nurse: nurse.jane@hospital.com / nurse123')
-        self.stdout.write('Receptionist: mary@hospital.com / reception123')
+        return super().changelist_view(request, extra_context)
 
-# apps/permissions/management/commands/setup_permissions.py
-from django.core.management.base import BaseCommand
-from apps.permissions.models import Module, Permission
-
-class Command(BaseCommand):
-    help = 'Setup permissions for a specific module'
-    
-    def add_arguments(self, parser):
-        parser.add_argument('module_name', type=str, help='Name of the module')
-        parser.add_argument('--display-name', type=str, help='Display name of the module')
-        parser.add_argument('--operations', nargs='+', default=['create', 'read', 'update', 'delete'],
-                          help='Operations to create permissions for')
-    
-    def handle(self, *args, **options):
-        module_name = options['module_name']
-        display_name = options['display_name'] or module_name.title()
-        operations = options['operations']
-        
-        # Create or get module
-        module, created = Module.objects.get_or_create(
-            name=module_name,
-            defaults={'display_name': display_name}
-        )
-        
-        if created:
-            self.stdout.write(f'Created module: {module.display_name}')
-        else:
-            self.stdout.write(f'Module exists: {module.display_name}')
-        
-        # Create permissions
-        created_permissions = []
-        for operation in operations:
-            permission, created = Permission.objects.get_or_create(
-                module=module,
-                operation=operation
-            )
-            if created:
-                created_permissions.append(permission)
-                self.stdout.write(f'Created permission: {permission.name}')
-            else:
-                self.stdout.write(f'Permission exists: {permission.name}')
-        
-        self.stdout.write(
-            self.style.SUCCESS(
-                f'Setup complete! Created {len(created_permissions)} new permissions for {module.display_name}'
-            )
-        )
-
+# Register the permission manager
+admin.site.register(Permission, PermissionManagerAdmin)
