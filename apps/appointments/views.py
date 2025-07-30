@@ -8,7 +8,11 @@ from django.db.models import Q, Count, Avg, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from datetime import datetime, timedelta, date, time
-from apps.permissions.mixins import DRFPermissionMixin, HasPermissionMixin
+
+# Updated imports for new permission system
+from apps.permissions.mixins import DRFModelPermissionMixin
+from apps.permissions.models import UserPermission
+
 from .models import (
     Appointment, AppointmentType, TimeSlot, AppointmentReminder,
     AppointmentAvailability, WaitingList, AppointmentFeedback
@@ -19,29 +23,41 @@ from .serializers import (
     AppointmentAvailabilitySerializer, WaitingListSerializer, AppointmentFeedbackSerializer
 )
 
-class AppointmentTypeViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
+class AppointmentTypeViewSet(DRFModelPermissionMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing appointment types
+    Automatically handles appointmenttype.create, appointmenttype.read, appointmenttype.update, appointmenttype.delete
+    """
     queryset = AppointmentType.objects.all()
     serializer_class = AppointmentTypeSerializer
-    module_name = 'appointments'
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['is_active', 'requires_referral', 'is_emergency']
     search_fields = ['name', 'description']
     ordering_fields = ['name', 'duration_minutes', 'cost']
     ordering = ['name']
 
-class TimeSlotViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
+class TimeSlotViewSet(DRFModelPermissionMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing doctor time slots
+    Automatically handles timeslot.create, timeslot.read, timeslot.update, timeslot.delete
+    """
     queryset = TimeSlot.objects.select_related('doctor__user')
     serializer_class = TimeSlotSerializer
-    module_name = 'appointments'
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['doctor', 'day_of_week', 'is_available', 'is_holiday']
     ordering = ['doctor', 'day_of_week', 'start_time']
 
-class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
+class AppointmentViewSet(DRFModelPermissionMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing appointments
+    Automatically handles appointment.create, appointment.read, appointment.update, appointment.delete
+    """
     queryset = Appointment.objects.select_related(
         'patient', 'doctor__user', 'appointment_type', 'created_by'
     ).prefetch_related('reminders', 'feedback')
-    module_name = 'appointments'
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = [
         'status', 'priority', 'doctor', 'patient', 'appointment_type',
@@ -119,6 +135,7 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def calendar_events(self, request):
         """Get appointments formatted for calendar display"""
+        # This inherits appointment.read permission from the mixin
         queryset = self.filter_queryset(self.get_queryset())
         
         # Default to current month if no date range specified
@@ -191,7 +208,17 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def check_in(self, request, pk=None):
-        """Check in patient for appointment"""
+        """
+        Check in patient for appointment
+        Requires appointment.update permission (handled by custom permission check)
+        """
+        # Check if user can update appointments (check-in is an update operation)
+        if not UserPermission.has_permission(request.user, 'appointment.update'):
+            return Response(
+                {'error': 'Permission denied. Required: appointment.update'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         appointment = self.get_object()
         
         if appointment.status != 'confirmed':
@@ -208,7 +235,16 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
-        """Mark appointment as completed"""
+        """
+        Mark appointment as completed
+        Requires appointment.update permission
+        """
+        if not UserPermission.has_permission(request.user, 'appointment.update'):
+            return Response(
+                {'error': 'Permission denied. Required: appointment.update'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         appointment = self.get_object()
         
         if appointment.status not in ['confirmed', 'in_progress']:
@@ -236,7 +272,18 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
-        """Cancel appointment"""
+        """
+        Cancel appointment
+        Requires custom appointment.cancel permission or appointment.update
+        """
+        # Try appointment.cancel first, fallback to appointment.update
+        if not (UserPermission.has_permission(request.user, 'appointment.cancel') or 
+                UserPermission.has_permission(request.user, 'appointment.update')):
+            return Response(
+                {'error': 'Permission denied. Required: appointment.cancel or appointment.update'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         appointment = self.get_object()
         
         if not appointment.can_cancel:
@@ -257,7 +304,16 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def reschedule(self, request, pk=None):
-        """Reschedule appointment"""
+        """
+        Reschedule appointment
+        Requires appointment.update permission
+        """
+        if not UserPermission.has_permission(request.user, 'appointment.update'):
+            return Response(
+                {'error': 'Permission denied. Required: appointment.update'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         appointment = self.get_object()
         
         if not appointment.can_reschedule:
@@ -309,7 +365,16 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def add_feedback(self, request, pk=None):
-        """Add feedback for completed appointment"""
+        """
+        Add feedback for completed appointment
+        Requires appointmentfeedback.create permission
+        """
+        if not UserPermission.has_permission(request.user, 'appointmentfeedback.create'):
+            return Response(
+                {'error': 'Permission denied. Required: appointmentfeedback.create'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         appointment = self.get_object()
         
         if appointment.status != 'completed':
@@ -335,7 +400,10 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def available_slots(self, request):
-        """Get available appointment slots for a doctor"""
+        """
+        Get available appointment slots for a doctor
+        Requires appointment.read permission
+        """
         doctor_id = request.query_params.get('doctor_id')
         date_param = request.query_params.get('date')
         
@@ -406,11 +474,10 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def statistics(self, request):
-        """Get appointment statistics"""
-        from apps.permissions.models import UserPermission
-        if not UserPermission.has_permission(request.user, 'appointments.read'):
-            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
+        """
+        Get appointment statistics
+        Requires appointment.read permission (checked by mixin automatically)
+        """
         today = timezone.now().date()
         
         # Basic counts
@@ -455,25 +522,62 @@ class AppointmentViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
             'top_doctors_today': list(doctor_stats)
         })
 
-class AppointmentAvailabilityViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        """
+        Approve appointment (custom permission example)
+        Requires appointment.approve permission
+        """
+        if not UserPermission.has_permission(request.user, 'appointment.approve'):
+            return Response(
+                {'error': 'Permission denied. Required: appointment.approve'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        appointment = self.get_object()
+        appointment.status = 'confirmed'
+        appointment.approved_by = request.user
+        appointment.approved_at = timezone.now()
+        appointment.save()
+        
+        return Response({'message': 'Appointment approved successfully'})
+
+class AppointmentAvailabilityViewSet(DRFModelPermissionMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing appointment availability 
+    Automatically handles appointmentavailability.create, appointmentavailability.read, appointmentavailability.update, appointmentavailability.delete
+    """
     queryset = AppointmentAvailability.objects.select_related('doctor__user')
     serializer_class = AppointmentAvailabilitySerializer
-    module_name = 'appointments'
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['doctor', 'date', 'is_available']
     ordering = ['date', 'start_time']
 
-class WaitingListViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
+class WaitingListViewSet(DRFModelPermissionMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing waiting list
+    Automatically handles waitinglist.create, waitinglist.read, waitinglist.update, waitinglist.delete
+    """
     queryset = WaitingList.objects.select_related('patient', 'doctor__user', 'appointment_type')
     serializer_class = WaitingListSerializer
-    module_name = 'appointments'
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['doctor', 'status', 'priority', 'preferred_date']
     ordering = ['priority', 'created_at']
     
     @action(detail=True, methods=['post'])
     def notify(self, request, pk=None):
-        """Notify patient about available slot"""
+        """
+        Notify patient about available slot
+        Requires waitinglist.update permission
+        """
+        if not UserPermission.has_permission(request.user, 'waitinglist.update'):
+            return Response(
+                {'error': 'Permission denied. Required: waitinglist.update'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         waiting_entry = self.get_object()
         
         if waiting_entry.status != 'active':
@@ -491,10 +595,14 @@ class WaitingListViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
         
         return Response({'message': 'Patient notified successfully'})
 
-class AppointmentFeedbackViewSet(DRFPermissionMixin, viewsets.ModelViewSet):
+class AppointmentFeedbackViewSet(DRFModelPermissionMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing appointment feedback
+    Automatically handles appointmentfeedback.create, appointmentfeedback.read, appointmentfeedback.update, appointmentfeedback.delete
+    """
     queryset = AppointmentFeedback.objects.select_related('appointment')
     serializer_class = AppointmentFeedbackSerializer
-    module_name = 'appointments'
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['overall_rating', 'would_recommend', 'is_anonymous']
     ordering = ['-submitted_at']
