@@ -10,23 +10,23 @@ DEBUG = config("DEBUG", default=False, cast=bool)
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=Csv())
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "django.contrib.sessions",
-    "django.contrib.messages",
-    "django.contrib.staticfiles",
-    # 3rd party
-    "rest_framework",
-    "corsheaders",
-    "django_filters",
-    "oauth2_provider",
     # local apps
     "apps.users",
     "apps.permissions",
     "apps.doctors",
     "apps.patients",
     "apps.appointments",
+    # 3rd party
+    "rest_framework",
+    "corsheaders",
+    "django_filters",
+    "oauth2_provider",
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
 ]
 
 MIDDLEWARE = [
