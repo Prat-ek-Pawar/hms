@@ -92,9 +92,22 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
 }
+AUTHENTICATION_BACKENDS = [
+    "oauth2_provider.backends.OAuth2Backend",
+    "django.contrib.auth.backends.ModelBackend",
+]
+
 OAUTH2_PROVIDER = {
-    # parses OAuth2 data from application/json requests
+    "ACCESS_TOKEN_EXPIRE_SECONDS": 864000,
+    "REFRESH_TOKEN_EXPIRE_SECONDS": 86400,
     "OAUTH2_BACKEND_CLASS": "oauth2_provider.oauth2_backends.JSONOAuthLibCore",
+    "SCOPES": {
+        "read": "Read access",
+        "write": "Write access",
+    },
+    "ACCESS_TOKEN_MODEL": "oauth2_provider.AccessToken",
+    "APPLICATION_MODEL": "oauth2_provider.Application",
+    "ALLOWED_GRANT_TYPES": ["password"],
 }
 # ✅ CORS
 CORS_ALLOWED_ORIGINS = config(
